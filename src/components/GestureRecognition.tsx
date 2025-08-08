@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/hooks/use-toast';
+import { Progress } from '@/components/ui/progress';
 import { 
   Camera, 
   CameraOff, 
@@ -15,7 +16,10 @@ import {
   Volume2,
   Hand,
   Brain,
-  Activity
+  Activity,
+  Timer,
+  Zap,
+  Eye
 } from 'lucide-react';
 
 interface GestureRecognitionProps {
@@ -34,13 +38,15 @@ export const GestureRecognition: React.FC<GestureRecognitionProps> = ({
   const {
     videoRef,
     canvasRef,
+    overlayCanvasRef,
     startRecognition,
     stopRecognition,
     isLoading,
     isModelLoaded,
     error,
     currentGesture,
-    stream
+    stream,
+    spaceGestureStartTime
   } = useHandGestureRecognition({
     modelPath,
     onGestureDetected: (result) => {
@@ -51,23 +57,39 @@ export const GestureRecognition: React.FC<GestureRecognitionProps> = ({
   });
 
   const handleGestureDetected = (result: any) => {
-    // Add to gesture history
+    // Handle auto actions
+    if (result.gesture === 'AUTO_SPEAK') {
+      speakFullText();
+      toast({
+        title: "Auto Speech",
+        description: "No gestures detected for 6 seconds - speaking text automatically",
+      });
+      return;
+    }
+
+    if (result.gesture === 'AUTO_CLEAR') {
+      clearText();
+      toast({
+        title: "Auto Clear", 
+        description: "Space gesture held for 5 seconds - text cleared automatically",
+      });
+      return;
+    }
+
     const newGestureEntry = {
       id: Date.now().toString(),
       gesture: result.gesture,
       timestamp: Date.now(),
       confidence: result.confidence
     };
-    
+
     setGestureHistory(prev => [newGestureEntry, ...prev.slice(0, 9)]);
 
-    // Process gesture for text building
     if (result.gesture === ' ') {
       setRecognizedText(prev => prev + ' ');
     } else if (result.gesture === 'Backspace') {
       setRecognizedText(prev => prev.slice(0, -1));
     } else if (result.gesture === 'next') {
-      // Handle word completion or special commands
       toast({
         title: "Command Detected",
         description: "Next gesture command recognized",
@@ -76,7 +98,6 @@ export const GestureRecognition: React.FC<GestureRecognitionProps> = ({
       setRecognizedText(prev => prev + result.gesture);
     }
 
-    // Speak the gesture if speech is enabled
     if (speechEnabled && result.gesture && result.gesture.length === 1) {
       speakText(result.gesture);
     }
@@ -133,8 +154,32 @@ export const GestureRecognition: React.FC<GestureRecognitionProps> = ({
         title: "Speaking Text",
         description: "Reading the recognized text aloud",
       });
+    } else {
+      toast({
+        title: "No Text to Speak",
+        description: "Please recognize some gestures first",
+        variant: "destructive"
+      });
     }
   };
+
+  const getSpaceProgress = () => {
+    if (!spaceGestureStartTime) return 0;
+    const elapsed = Date.now() - spaceGestureStartTime;
+    return Math.min((elapsed / 5000) * 100, 100);
+  };
+
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (spaceGestureStartTime) {
+      interval = setInterval(() => {
+        // Force re-render to update progress
+      }, 100);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [spaceGestureStartTime]);
 
   const formatConfidence = (confidence: number) => {
     return `${(confidence * 100).toFixed(0)}%`;
@@ -185,7 +230,13 @@ export const GestureRecognition: React.FC<GestureRecognitionProps> = ({
                   {isModelLoaded && (
                     <Badge variant="secondary" className="ml-auto">
                       <Brain className="w-3 h-3 mr-1" />
-                      Model Ready
+                      Real AI Model
+                    </Badge>
+                  )}
+                  {!isModelLoaded && (
+                    <Badge variant="outline" className="ml-auto">
+                      <Zap className="w-3 h-3 mr-1" />
+                      Demo Mode
                     </Badge>
                   )}
                 </CardTitle>
@@ -201,20 +252,32 @@ export const GestureRecognition: React.FC<GestureRecognitionProps> = ({
                 ) : (
                   <div className="relative">
                     <div className="relative bg-black rounded-lg overflow-hidden">
+                      {/* Main video display - NOT MIRRORED for user viewing */}
                       <video
                         ref={videoRef}
                         autoPlay
                         muted
                         playsInline
-                        className="w-full h-64 object-cover transform scale-x-[-1]"
+                        className="w-full h-64 object-cover"
                         style={{ display: stream ? 'block' : 'none' }}
                       />
+                      
+                      {/* Hidden canvas for processing - MIRRORED for correct model input */}
                       <canvas
                         ref={canvasRef}
                         width={640}
                         height={480}
-                        className="absolute inset-0 w-full h-full transform scale-x-[-1]"
+                        className="hidden"
                       />
+                      
+                      {/* Overlay canvas for hand visualization - NOT MIRRORED */}
+                      <canvas
+                        ref={overlayCanvasRef}
+                        width={640}
+                        height={480}
+                        className="absolute inset-0 w-full h-full pointer-events-none"
+                      />
+                      
                       {!stream && (
                         <div className="absolute inset-0 flex items-center justify-center text-muted-foreground">
                           <div className="text-center">
@@ -224,8 +287,8 @@ export const GestureRecognition: React.FC<GestureRecognitionProps> = ({
                         </div>
                       )}
                     </div>
-                    
-                    {/* Gesture Overlay */}
+
+                    {/* Gesture Info Display */}
                     {currentGesture && isRecording && (
                       <div className="absolute top-4 left-4 bg-ai-primary/90 backdrop-blur rounded-lg p-3">
                         <div className="flex items-center gap-2 text-white">
@@ -237,6 +300,30 @@ export const GestureRecognition: React.FC<GestureRecognitionProps> = ({
                         </div>
                       </div>
                     )}
+
+                    {/* Space Gesture Timer */}
+                    {spaceGestureStartTime && (
+                      <div className="absolute top-4 right-4 bg-ai-warning/90 backdrop-blur rounded-lg p-3">
+                        <div className="flex items-center gap-2 text-white">
+                          <Timer className="w-4 h-4" />
+                          <span className="text-sm font-medium">Auto-Clear</span>
+                        </div>
+                        <Progress value={getSpaceProgress()} className="mt-2 w-24" />
+                        <p className="text-xs text-center mt-1">{(5 - (Date.now() - spaceGestureStartTime) / 1000).toFixed(1)}s</p>
+                      </div>
+                    )}
+
+                    {/* Hand Detection Box Preview */}
+                    <div className="absolute bottom-4 right-4">
+                      <Card className="bg-background/80 backdrop-blur border-ai-glow/30">
+                        <CardContent className="p-3">
+                          <div className="flex items-center gap-2 text-sm">
+                            <Eye className="w-4 h-4 text-ai-glow" />
+                            <span>Hand Detection Active</span>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    </div>
                   </div>
                 )}
 
@@ -246,7 +333,7 @@ export const GestureRecognition: React.FC<GestureRecognitionProps> = ({
                     variant={isRecording ? "destructive" : "ai"}
                     size="lg"
                     onClick={handleStartStop}
-                    disabled={isLoading || !isModelLoaded}
+                    disabled={isLoading}
                   >
                     {isRecording ? <CameraOff className="w-4 h-4 mr-2" /> : <Camera className="w-4 h-4 mr-2" />}
                     {isRecording ? 'Stop Recognition' : 'Start Recognition'}
@@ -323,7 +410,7 @@ export const GestureRecognition: React.FC<GestureRecognitionProps> = ({
                       >
                         <div className="flex items-center gap-2">
                           <Badge variant="outline" className="text-xs">
-                            {entry.gesture}
+                            {entry.gesture === ' ' ? 'SPACE' : entry.gesture}
                           </Badge>
                           <span className="text-xs text-muted-foreground">
                             {formatConfidence(entry.confidence)}
@@ -339,6 +426,33 @@ export const GestureRecognition: React.FC<GestureRecognitionProps> = ({
               </CardContent>
             </Card>
 
+            {/* Auto Features */}
+            <Card className="border-ai-glow/20">
+              <CardHeader>
+                <CardTitle className="text-lg">Auto Features</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="p-3 bg-ai-success/10 rounded-lg border border-ai-success/20">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Timer className="w-4 h-4 text-ai-success" />
+                    <span className="text-sm font-medium">Auto-Clear</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Hold space gesture for 5 seconds to auto-clear text
+                  </p>
+                </div>
+                <div className="p-3 bg-ai-warning/10 rounded-lg border border-ai-warning/20">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Volume2 className="w-4 h-4 text-ai-warning" />
+                    <span className="text-sm font-medium">Auto-Speak</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    No gestures for 6 seconds triggers automatic speech
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+
             {/* Status Card */}
             <Card className="border-ai-glow/20">
               <CardHeader>
@@ -348,7 +462,7 @@ export const GestureRecognition: React.FC<GestureRecognitionProps> = ({
                 <div className="flex items-center justify-between">
                   <span className="text-sm">Model Status</span>
                   <Badge variant={isModelLoaded ? "default" : "secondary"}>
-                    {isModelLoaded ? "Loaded" : "Loading..."}
+                    {isModelLoaded ? "Real AI" : "Demo Mode"}
                   </Badge>
                 </div>
                 <div className="flex items-center justify-between">
